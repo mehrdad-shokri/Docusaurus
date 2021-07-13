@@ -65,6 +65,7 @@ module.exports = {
     'jsx-a11y/no-noninteractive-element-interactions': WARNING,
     'no-console': OFF,
     'no-else-return': OFF,
+    'no-param-reassign': [WARNING, {props: false}],
     'no-underscore-dangle': OFF,
     curly: [WARNING, 'all'],
     'react/jsx-closing-bracket-location': OFF, // Conflicts with Prettier.
@@ -76,18 +77,22 @@ module.exports = {
     'react/prefer-stateless-function': WARNING,
     'react/jsx-props-no-spreading': OFF,
     'react-hooks/rules-of-hooks': ERROR,
+    'react/require-default-props': [ERROR, {ignoreFunctionalComponents: true}],
     '@typescript-eslint/no-inferrable-types': OFF,
     'import/first': OFF,
     'import/order': OFF,
     'import/prefer-default-export': OFF,
     'lines-between-class-members': OFF,
     'no-lonely-if': WARNING,
-    'no-use-before-define': [
+    'no-use-before-define': OFF,
+    '@typescript-eslint/no-use-before-define': [
       ERROR,
       {functions: false, classes: false, variables: true},
     ],
     'no-unused-vars': OFF,
     'no-nested-ternary': WARNING,
+    '@typescript-eslint/no-empty-function': OFF,
+    '@typescript-eslint/no-non-null-assertion': OFF, // Have to use type assertion anyways
     '@typescript-eslint/no-unused-vars': [ERROR, {argsIgnorePattern: '^_'}],
     '@typescript-eslint/ban-ts-comment': [
       ERROR,
@@ -97,23 +102,26 @@ module.exports = {
     // TODO re-enable some these as errors
     // context: https://github.com/facebook/docusaurus/pull/2949
     '@typescript-eslint/ban-types': WARNING,
-    'import/no-extraneous-dependencies': WARNING,
+    'import/no-extraneous-dependencies': ERROR,
     'no-useless-escape': WARNING,
     'prefer-template': WARNING,
-    'no-param-reassign': WARNING,
     'no-template-curly-in-string': WARNING,
     'array-callback-return': WARNING,
     camelcase: WARNING,
     'no-restricted-syntax': WARNING,
     'no-unused-expressions': WARNING,
-    '@typescript-eslint/no-empty-function': WARNING,
     'global-require': WARNING,
     'prefer-destructuring': WARNING,
     yoda: WARNING,
     'no-control-regex': WARNING,
-    'no-empty': WARNING,
+    'no-empty': [WARNING, {allowEmptyCatch: true}],
     'no-prototype-builtins': WARNING,
     'no-case-declarations': WARNING,
+    'no-undef': OFF,
+    'no-shadow': OFF,
+    '@typescript-eslint/no-shadow': ERROR,
+    'no-redeclare': OFF,
+    '@typescript-eslint/no-redeclare': ERROR,
   },
   overrides: [
     {
@@ -123,6 +131,13 @@ module.exports = {
       ],
       rules: {
         'header/header': OFF,
+        'global-require': OFF,
+      },
+    },
+    {
+      files: ['*.d.ts'],
+      rules: {
+        'import/no-duplicates': OFF,
       },
     },
     {

@@ -6,15 +6,22 @@
  */
 
 import fs from 'fs-extra';
-import kebabCase from 'lodash.kebabcase';
 import path from 'path';
 import admonitions from 'remark-admonitions';
-import {normalizeUrl, docuHash, aliasedSitePath} from '@docusaurus/utils';
+import {
+  normalizeUrl,
+  docuHash,
+  aliasedSitePath,
+  getPluginI18nPath,
+  reportMessage,
+  posixPath,
+  addTrailingPathSeparator,
+} from '@docusaurus/utils';
 import {
   STATIC_DIR_NAME,
   DEFAULT_PLUGIN_ID,
 } from '@docusaurus/core/lib/constants';
-import {ValidationError} from '@hapi/joi';
+import {flatten, take, kebabCase} from 'lodash';
 
 import {
   PluginOptions,
@@ -24,6 +31,8 @@ import {
   TagsModule,
   BlogPaginated,
   BlogPost,
+  BlogContentPaths,
+  BlogMarkdownLoaderOptions,
 } from './types';
 import {PluginOptionSchema} from './pluginOptionSchema';
 import {
@@ -35,39 +44,60 @@ import {
   OptionValidationContext,
   ValidationResult,
 } from '@docusaurus/types';
-import {Configuration, Loader} from 'webpack';
-import {generateBlogFeed, generateBlogPosts} from './blogUtils';
+import {Configuration} from 'webpack';
+import {
+  generateBlogFeed,
+  generateBlogPosts,
+  getContentPathList,
+  getSourceToPermalink,
+} from './blogUtils';
 
 export default function pluginContentBlog(
   context: LoadContext,
   options: PluginOptions,
-): Plugin<BlogContent | null, typeof PluginOptionSchema> {
+): Plugin<BlogContent> {
   if (options.admonitions) {
     options.remarkPlugins = options.remarkPlugins.concat([
       [admonitions, options.admonitions],
     ]);
   }
 
-  const {siteDir, generatedFilesDir} = context;
-  const contentPath = path.resolve(siteDir, options.path);
+  const {
+    siteDir,
+    siteConfig: {onBrokenMarkdownLinks},
+    generatedFilesDir,
+    i18n: {currentLocale},
+  } = context;
+
+  const contentPaths: BlogContentPaths = {
+    contentPath: path.resolve(siteDir, options.path),
+    contentPathLocalized: getPluginI18nPath({
+      siteDir,
+      locale: currentLocale,
+      pluginName: 'docusaurus-plugin-content-blog',
+      pluginId: options.id,
+    }),
+  };
+  const pluginId = options.id ?? DEFAULT_PLUGIN_ID;
 
   const pluginDataDirRoot = path.join(
     generatedFilesDir,
     'docusaurus-plugin-content-blog',
   );
-  const dataDir = path.join(pluginDataDirRoot, options.id ?? DEFAULT_PLUGIN_ID);
+  const dataDir = path.join(pluginDataDirRoot, pluginId);
   const aliasedSource = (source: string) =>
-    `~blog/${path.relative(pluginDataDirRoot, source)}`;
-
-  let blogPosts: BlogPost[] = [];
+    `~blog/${posixPath(path.relative(pluginDataDirRoot, source))}`;
 
   return {
     name: 'docusaurus-plugin-content-blog',
 
     getPathsToWatch() {
       const {include = []} = options;
-      const globPattern = include.map((pattern) => `${contentPath}/${pattern}`);
-      return [...globPattern];
+      return flatten(
+        getContentPathList(contentPaths).map((contentPath) => {
+          return include.map((pattern) => `${contentPath}/${pattern}`);
+        }),
+      );
     },
 
     getClientModules() {
@@ -84,9 +114,19 @@ export default function pluginContentBlog(
     async loadContent() {
       const {postsPerPage, routeBasePath} = options;
 
-      blogPosts = await generateBlogPosts(contentPath, context, options);
+      const blogPosts: BlogPost[] = await generateBlogPosts(
+        contentPaths,
+        context,
+        options,
+      );
+
       if (!blogPosts.length) {
-        return null;
+        return {
+          blogPosts: [],
+          blogListPaginated: [],
+          blogTags: {},
+          blogTagsListPath: null,
+        };
       }
 
       // Colocate next and prev metadata.
@@ -140,6 +180,7 @@ export default function pluginContentBlog(
                 ? blogPaginationPermalink(page + 1)
                 : null,
             blogDescription: options.blogDescription,
+            blogTitle: options.blogTitle,
           },
           items: blogPosts
             .slice(page * postsPerPage, (page + 1) * postsPerPage)
@@ -208,7 +249,7 @@ export default function pluginContentBlog(
 
       const {addRoute, createData} = actions;
       const {
-        blogPosts: loadedBlogPosts,
+        blogPosts,
         blogListPaginated,
         blogTags,
         blogTagsListPath,
@@ -216,9 +257,32 @@ export default function pluginContentBlog(
 
       const blogItemsToMetadata: BlogItemsToMetadata = {};
 
+      const sidebarBlogPosts =
+        options.blogSidebarCount === 'ALL'
+          ? blogPosts
+          : take(blogPosts, options.blogSidebarCount);
+
+      // This prop is useful to provide the blog list sidebar
+      const sidebarProp = await createData(
+        // Note that this created data path must be in sync with
+        // metadataPath provided to mdx-loader.
+        `blog-post-list-prop-${pluginId}.json`,
+        JSON.stringify(
+          {
+            title: options.blogSidebarTitle,
+            items: sidebarBlogPosts.map((blogPost) => ({
+              title: blogPost.metadata.title,
+              permalink: blogPost.metadata.permalink,
+            })),
+          },
+          null,
+          2,
+        ),
+      );
+
       // Create routes for blog entries.
       await Promise.all(
-        loadedBlogPosts.map(async (blogPost) => {
+        blogPosts.map(async (blogPost) => {
           const {id, metadata} = blogPost;
           await createData(
             // Note that this created data path must be in sync with
@@ -232,6 +296,7 @@ export default function pluginContentBlog(
             component: blogPostComponent,
             exact: true,
             modules: {
+              sidebar: aliasedSource(sidebarProp),
               content: metadata.source,
             },
           });
@@ -255,6 +320,7 @@ export default function pluginContentBlog(
             component: blogListComponent,
             exact: true,
             modules: {
+              sidebar: aliasedSource(sidebarProp),
               items: items.map((postID) => {
                 // To tell routes.js this is an import and not a nested object to recurse.
                 return {
@@ -302,6 +368,7 @@ export default function pluginContentBlog(
             component: blogTagsPostsComponent,
             exact: true,
             modules: {
+              sidebar: aliasedSource(sidebarProp),
               items: items.map((postID) => {
                 const metadata = blogItemsToMetadata[postID];
                 return {
@@ -332,6 +399,7 @@ export default function pluginContentBlog(
           component: blogTagsListComponent,
           exact: true,
           modules: {
+            sidebar: aliasedSource(sidebarProp),
             tags: aliasedSource(tagsListPath),
           },
         });
@@ -341,9 +409,33 @@ export default function pluginContentBlog(
     configureWebpack(
       _config: Configuration,
       isServer: boolean,
-      {getBabelLoader, getCacheLoader}: ConfigureWebpackUtils,
+      {getJSLoader}: ConfigureWebpackUtils,
+      content,
     ) {
-      const {rehypePlugins, remarkPlugins, truncateMarker} = options;
+      const {
+        rehypePlugins,
+        remarkPlugins,
+        truncateMarker,
+        beforeDefaultRemarkPlugins,
+        beforeDefaultRehypePlugins,
+      } = options;
+
+      const markdownLoaderOptions: BlogMarkdownLoaderOptions = {
+        siteDir,
+        contentPaths,
+        truncateMarker,
+        sourceToPermalink: getSourceToPermalink(content.blogPosts),
+        onBrokenMarkdownLink: (brokenMarkdownLink) => {
+          if (onBrokenMarkdownLinks === 'ignore') {
+            return;
+          }
+          reportMessage(
+            `Blog markdown link couldn't be resolved: (${brokenMarkdownLink.link}) in ${brokenMarkdownLink.filePath}`,
+            onBrokenMarkdownLinks,
+          );
+        },
+      };
+
       return {
         resolve: {
           alias: {
@@ -354,15 +446,18 @@ export default function pluginContentBlog(
           rules: [
             {
               test: /(\.mdx?)$/,
-              include: [contentPath],
+              include: getContentPathList(contentPaths)
+                // Trailing slash is important, see https://github.com/facebook/docusaurus/pull/3970
+                .map(addTrailingPathSeparator),
               use: [
-                getCacheLoader(isServer),
-                getBabelLoader(isServer),
+                getJSLoader({isServer}),
                 {
                   loader: require.resolve('@docusaurus/mdx-loader'),
                   options: {
                     remarkPlugins,
                     rehypePlugins,
+                    beforeDefaultRemarkPlugins,
+                    beforeDefaultRehypePlugins,
                     staticDir: path.join(siteDir, STATIC_DIR_NAME),
                     // Note that metadataPath must be the same/in-sync as
                     // the path from createData for each MDX.
@@ -373,18 +468,16 @@ export default function pluginContentBlog(
                         `${docuHash(aliasedPath)}.json`,
                       );
                     },
+                    // For blog posts a title in markdown is always removed
+                    // Blog posts title are rendered separately
+                    removeContentTitle: true,
                   },
                 },
                 {
                   loader: path.resolve(__dirname, './markdownLoader.js'),
-                  options: {
-                    siteDir,
-                    contentPath,
-                    truncateMarker,
-                    blogPosts,
-                  },
+                  options: markdownLoaderOptions,
                 },
-              ].filter(Boolean) as Loader[],
+              ].filter(Boolean),
             },
           ],
         },
@@ -396,7 +489,7 @@ export default function pluginContentBlog(
         return;
       }
 
-      const feed = await generateBlogFeed(context, options);
+      const feed = await generateBlogFeed(contentPaths, context, options);
 
       if (!feed) {
         return;
@@ -415,16 +508,21 @@ export default function pluginContentBlog(
           try {
             await fs.outputFile(feedPath, feedContent);
           } catch (err) {
-            throw new Error(`Generating ${feedType} feed failed: ${err}`);
+            throw new Error(`Generating ${feedType} feed failed: ${err}.`);
           }
         }),
       );
     },
 
-    injectHtmlTags() {
+    injectHtmlTags({content}) {
+      if (!content.blogPosts.length) {
+        return {};
+      }
+
       if (!options.feedOptions?.type) {
         return {};
       }
+
       const feedTypes = options.feedOptions.type;
       const {
         siteConfig: {title},
@@ -478,10 +576,7 @@ export default function pluginContentBlog(
 export function validateOptions({
   validate,
   options,
-}: OptionValidationContext<PluginOptions, ValidationError>): ValidationResult<
-  PluginOptions,
-  ValidationError
-> {
+}: OptionValidationContext<PluginOptions>): ValidationResult<PluginOptions> {
   const validatedOptions = validate(PluginOptionSchema, options);
   return validatedOptions;
 }
